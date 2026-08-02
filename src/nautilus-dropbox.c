@@ -40,6 +40,7 @@
 #include <nautilus-extension.h>
 
 #include "g-util.h"
+#include "dropbox-client-util.h"
 #include "dropbox-command-client.h"
 #include "nautilus-dropbox.h"
 #include "nautilus-dropbox-hooks.h"
@@ -68,7 +69,12 @@ static GList *my_g_hash_table_get_keys(GHashTable *ght) {
 #endif
 
 /*
-  Simplifies a path by removing navigation elements such as '.' and '..'
+  Simplifies a path by removing navigation elements such as '.' and '..',
+  then resolves symlinks in every component except the last one.  The
+  dropbox daemon only knows files by their real location, so a path
+  reached through a symlinked parent has to be translated before it can
+  be used as a lookup key: shell_touch pushes arrive with real paths and
+  would otherwise never match a file browsed through a symlink.
 
   Arguments:
     - path: input path to be canonicalized
@@ -106,7 +112,11 @@ canonicalize_path(gchar *path) {
   }
   
   cpy[j] = NULL;
-  toret = g_build_filenamev(cpy);
+  {
+    gchar *simplified = g_build_filenamev(cpy);
+    toret = dropbox_client_util_resolve_ancestor_symlinks(simplified);
+    g_free(simplified);
+  }
 
 exit:
   g_free(cpy);
@@ -487,7 +497,9 @@ menu_item_cb(NautilusMenuItem *item,
       g_free(uri);
       if (!path)
 	continue;
-      arglist[i] = path;
+      /* the daemon answered for the resolved path, act on that same path */
+      arglist[i] = dropbox_client_util_resolve_ancestor_symlinks(path);
+      g_free(path);
       i++;
     }
 
@@ -668,10 +680,12 @@ nautilus_dropbox_get_file_items(NautilusMenuProvider *provider,
   for (elem = files; elem; elem = elem->next, i++) {
     gchar *uri = nautilus_file_info_get_uri(elem->data);
     gchar *filename_un = uri ? g_filename_from_uri(uri, NULL, NULL) : NULL;
-    gchar *filename = filename_un ? g_filename_to_utf8(filename_un, -1, NULL, NULL, NULL) : NULL;
+    gchar *filename_re = filename_un ? dropbox_client_util_resolve_ancestor_symlinks(filename_un) : NULL;
+    gchar *filename = filename_re ? g_filename_to_utf8(filename_re, -1, NULL, NULL, NULL) : NULL;
 
     g_free(uri);
     g_free(filename_un);
+    g_free(filename_re);
 
     if (filename == NULL) {
       /* oooh, filename wasn't correctly encoded, or isn't a local file.  */

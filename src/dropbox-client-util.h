@@ -30,6 +30,7 @@ G_BEGIN_DECLS
 
 gchar *dropbox_client_util_sanitize(const gchar *a);
 gchar *dropbox_client_util_desanitize(const gchar *a);
+gchar *dropbox_client_util_resolve_ancestor_symlinks(const gchar *path);
 
 gboolean
 dropbox_client_util_command_parse_arg(const gchar *line, GHashTable *return_table);
