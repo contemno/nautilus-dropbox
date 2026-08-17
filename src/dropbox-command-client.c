@@ -355,12 +355,16 @@ do_file_info_command(GIOChannel *chan, DropboxFileInfoCommand *dfic, GError **ge
     filename_un = uri ? g_filename_from_uri(uri, NULL, NULL): NULL;
     g_free(uri);
     if (filename_un) {
-      filename = g_filename_to_utf8(filename_un, -1, NULL, NULL, NULL);
+      gchar *filename_re;
+      /* resolve symlinked parents so the daemon is asked about the real path */
+      filename_re = dropbox_client_util_resolve_ancestor_symlinks(filename_un);
       g_free(filename_un);
+      filename = g_filename_to_utf8(filename_re, -1, NULL, NULL, NULL);
       if (filename == NULL) {
         /* oooh, filename wasn't correctly encoded. mark as  */
-	debug("file wasn't correctly encoded %s", filename_un);
+	debug("file wasn't correctly encoded %s", filename_re);
       }
+      g_free(filename_re);
     }
   }
 

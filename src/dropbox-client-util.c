@@ -21,6 +21,9 @@
  *
  */
 
+#include <stdlib.h>
+#include <string.h>
+
 #include <glib.h>
 
 static gchar chars_not_to_escape[] = {
@@ -51,6 +54,85 @@ gchar *dropbox_client_util_sanitize(const gchar *a) {
 
 gchar *dropbox_client_util_desanitize(const gchar *a) {
   return g_strcompress(a);
+}
+
+/*
+  Every row in a directory view shares one parent, so remember the
+  last resolved parent instead of walking the filesystem once per row.
+  The short expiry bounds how stale a retargeted symlink can look and
+  failures are never cached.  Guarded by a mutex: resolution happens
+  on both the main loop and the command client thread.
+*/
+#define RESOLVE_CACHE_TTL_US (2 * G_USEC_PER_SEC)
+
+static GMutex resolve_cache_mutex;
+static gchar *resolve_cache_dir = NULL;
+static gchar *resolve_cache_resolved = NULL;
+static gint64 resolve_cache_expires = 0;
+
+/*
+  Returns a copy of path with symlinks resolved in every component
+  except the last one.  The dropbox daemon only knows files by their
+  real location, so a path reached through a symlinked parent
+  (e.g. ~/Documents -> ~/Dropbox/Documents) has to be translated
+  before the daemon is asked about it.  The last component is
+  deliberately left alone: a symlink that is itself an item in the
+  view keeps its own identity, otherwise a link inside Dropbox
+  pointing outside would report its target's status.
+
+  Returns a newly-allocated string.  If the parent can't be resolved
+  (broken symlink, permission error), returns a copy of the input
+  path so the request still goes through as before.
+*/
+gchar *dropbox_client_util_resolve_ancestor_symlinks(const gchar *path) {
+  gchar *dir, *base, *resolved_dir, *toret;
+
+  base = g_path_get_basename(path);
+
+  /* nothing above the root to resolve */
+  if (strcmp(base, "/") == 0) {
+    g_free(base);
+    return g_strdup(path);
+  }
+
+  dir = g_path_get_dirname(path);
+
+  g_mutex_lock(&resolve_cache_mutex);
+  if (resolve_cache_dir != NULL && strcmp(resolve_cache_dir, dir) == 0 &&
+      g_get_monotonic_time() < resolve_cache_expires) {
+    resolved_dir = g_strdup(resolve_cache_resolved);
+    g_mutex_unlock(&resolve_cache_mutex);
+  }
+  else {
+    char *real_dir;
+
+    g_mutex_unlock(&resolve_cache_mutex);
+
+    real_dir = realpath(dir, NULL);
+    if (real_dir == NULL) {
+      /* broken symlink or permission error, use the path as given */
+      g_free(dir);
+      g_free(base);
+      return g_strdup(path);
+    }
+    resolved_dir = g_strdup(real_dir);
+    free(real_dir);
+
+    g_mutex_lock(&resolve_cache_mutex);
+    g_free(resolve_cache_dir);
+    g_free(resolve_cache_resolved);
+    resolve_cache_dir = g_strdup(dir);
+    resolve_cache_resolved = g_strdup(resolved_dir);
+    resolve_cache_expires = g_get_monotonic_time() + RESOLVE_CACHE_TTL_US;
+    g_mutex_unlock(&resolve_cache_mutex);
+  }
+
+  toret = g_build_filename(resolved_dir, base, NULL);
+  g_free(resolved_dir);
+  g_free(dir);
+  g_free(base);
+
+  return toret;
 }
 
 gboolean
